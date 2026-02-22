@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mvn clean compile:*)",
+      "Bash(chmod +x:*)",
+      "Bash(curl:*)",
+      "Bash(./convert.bat:*)",
+      "Bash(mvn exec:java:*)",
+      "Bash(mvn clean:*)",
+      "Bash(java:*)",
+      "Bash(jar:*)",
+      "Bash(ls:*)",
+      "Bash(mvn compile:*)",
+      "Bash(mvn package:*)",
+      "Bash(mvn install:install-file:*)",
+      "Bash(mvn dependency:copy:*)"
+    ]
+  }
+}

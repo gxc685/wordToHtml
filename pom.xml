@@ -114,6 +114,16 @@
                     <skipTests>true</skipTests>
                 </configuration>
             </plugin>
+
+            <!-- 运行主类 -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.3.0</version>
+                <configuration>
+                    <mainClass>com.example.WordToHtmlConverter</mainClass>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 </project>

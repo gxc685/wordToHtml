@@ -1,121 +1,87 @@
-# Word 转 HTML 转换器
+# Word Header/Content/Footer 批量导出
 
-使用 Aspose.Words for Java 21.6 将 Word 文档转换为 HTML。
+基于 Aspose.Words（24.12）批量扫描目录中的 `.doc/.docx`，并导出：
+
+- `header.html`
+- `content.html`
+- `footer.html`
+- `word.css`
+- `images/*`
+- `manifest.json`
 
 ## 环境要求
 
-- Java 8 或更高版本
-- Maven 3.6 或更高版本
+- Java 17+
+- Maven 3.8+
+- `lib/aspose-words-24.12-jdk17.jar`
 
-## 项目结构
+## 核心行为
 
-```
-.
-├── pom.xml                           # Maven 配置文件
-├── convert.bat                       # Windows 运行脚本
-├── convert.sh                        # Linux/Mac 运行脚本
-├── README.md                         # 说明文档
-├── lib/                              # 存放本地 JAR 文件
-│   └── aspose-words-21.6-jdk16.jar   # Aspose.Words 核心库
-└── src/
-    └── main/
-        └── java/
-            └── com/
-                └── example/
-                    └── WordToHtmlConverter.java  # 主程序
-```
+- 默认扫描 `--root` 下一级子目录（`--recursive=true` 可递归）
+- 每个目录按规则选一个 Word 文件（默认优先 `docx`）
+- 拆分逻辑：
+  - `header/footer`：取 first section，`First` 非空优先，否则 `Primary`
+  - `content`：拼接所有 section 的 body 块级节点（段落/表格）
+- 导出 HTML 后处理：只保留可注入 body 片段，并包容器：
+  - `<div class="word-header">...</div>`
+  - `<div class="word-content">...</div>`
+  - `<div class="word-footer">...</div>`
+- 图片落盘到 `result/images/`（非 base64）
+- CSS 汇总输出到 `result/word.css`
 
-## 所需 JAR 文件
+## 输出目录结构
 
-从 Aspose 下载以下文件：
+每个处理目录会生成：
 
-| 文件名 | 说明 | 必需 |
-|--------|------|------|
-| `aspose-words-21.6-jdk16.jar` | **核心运行时库** | ✅ 必须 |
-| `aspose-words-21.6-javadoc.jar` | Java 文档 | ❌ 可选 |
-| `aspose-words-21.6-shaping-harfbuzz-plugin.jar` | 高级文本塑形插件(阿拉伯语/泰语等) | ❌ 可选 |
-
-### JAR 版本选择
-
-- **`jdk16.jar`** - 兼容 JDK 6/7/8/11+，推荐选用 ✅
-- `jdk17.jar` - 需要 JDK 7+，功能更新但兼容性稍差
-
-## 快速开始
-
-### 1. 放置 JAR 文件
-
-将下载的 `aspose-words-21.6-jdk16.jar` 复制到 `lib/` 目录：
-
-```bash
-lib/
-└── aspose-words-21.6-jdk16.jar
+```text
+<dir>/
+  result/
+    header.html
+    content.html
+    footer.html
+    word.css
+    images/
+    manifest.json
 ```
 
-### 1. 编译项目
+## CLI 参数
 
-```bash
-mvn clean compile
-```
+- `--root=.` 根目录（也支持位置参数）
+- `--recursive=false` 是否递归扫描子目录
+- `--docPattern=*.doc,*.docx` 匹配 Word 文件模式
+- `--prefer=docx` 候选优先级（`docx|doc`）
+- `--acceptRevisions=false` 是否接受修订
+- `--updateFields=true` 是否更新字段
+- `--overwrite=true` result 已存在时是否覆盖
+- `--log=info|debug` 日志级别
+- `--failFast=false` 出错是否立即停止
 
-### 2. 打包为可执行 JAR
+## 快速使用
+
+### 1. 编译
 
 ```bash
 mvn clean package
 ```
 
-生成的 JAR 文件位于 `target/word-to-html-1.0-SNAPSHOT-jar-with-dependencies.jar`
-
-### 3. 运行转换
-
-#### 方式一: 使用 Maven exec 插件
+### 2. 运行（Maven）
 
 ```bash
-# 转换单个文件
-mvn exec:java -Dexec.args="input.docx"
-
-# 指定输出路径
-mvn exec:java -Dexec.args="input.docx output.html"
+mvn -q exec:java -Dexec.args="--root=./convert --recursive=false --prefer=docx"
 ```
 
-#### 方式二: 使用脚本
+### 3. 运行（脚本）
 
 ```bash
 # Windows
-covert.bat input.docx output.html
+convert.bat --root=.\convert --recursive=false
 
 # Linux/Mac
-./convert.sh input.docx output.html
+./convert.sh --root=./convert --recursive=false
 ```
 
-#### 方式三: 直接运行 JAR
+## 说明
 
-```bash
-# 基本用法
-java -jar target/word-to-html-1.0-SNAPSHOT-jar-with-dependencies.jar input.docx
-
-# 指定输出路径
-java -jar target/word-to-html-1.0-SNAPSHOT-jar-with-dependencies.jar input.docx output.html
-```
-
-## 功能特性
-
-- ✅ 支持 .doc, .docx, .rtf, .odt 等 Word 格式
-- ✅ 图片自动转为 Base64 嵌入 HTML
-- ✅ 保留文档格式和样式 (CSS 嵌入)
-- ✅ 支持页眉页脚导出
-- ✅ 支持页边距设置
-
-## 注意事项
-
-1. Aspose.Words 需要有效的许可证才能去除水印和评估限制
-2. 大文件转换可能需要较长时间
-3. 某些复杂格式可能在 HTML 中不能完全保留
-
-## 添加许可证 (可选)
-
-如果你有 Aspose.Words 许可证，可以将许可证文件添加到项目中：
-
-```java
-License license = new License();
-license.setLicense("Aspose.Words.lic");
-```
+- `manifest.json` 会记录 source 文档、生成时间、输出路径和 warnings
+- 默认会跳过没有 Word 文件的目录并记录 warning
+- 如果目录中有多个 Word 文件，会按固定规则自动选中并记录 warning

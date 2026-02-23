@@ -13,7 +13,11 @@
       "Bash(mvn compile:*)",
       "Bash(mvn package:*)",
       "Bash(mvn install:install-file:*)",
-      "Bash(mvn dependency:copy:*)"
+      "Bash(mvn dependency:copy:*)",
+      "Bash(echo need to check:*)",
+      "Bash(python3:*)",
+      "Bash(python:*)",
+      "Bash(cat:*)"
     ]
   }
 }

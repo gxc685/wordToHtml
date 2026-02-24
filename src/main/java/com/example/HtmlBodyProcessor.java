@@ -1,0 +1,197 @@
+package com.example;
+
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.nodes.Node;
+import org.jsoup.nodes.TextNode;
+import org.jsoup.parser.Parser;
+import org.jsoup.select.Elements;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * HTML Body 处理器
+ * 负责处理 HTML body 内部的转换逻辑
+ */
+public class HtmlBodyProcessor {
+
+    // 仅匹配 input value 完全是 [字符内容]
+    private static final Pattern BRACKET_VALUE_PATTERN = Pattern.compile("^\\s*\\[([^\\]]+)\\]\\s*$");
+    // 仅匹配 input value 完全是 |数字|
+    private static final Pattern PIPE_VALUE_PATTERN = Pattern.compile("^\\s*\\|\\s*(\\d+)\\s*\\|\\s*$");
+    // 匹配 page 数字 of 数字（支持各种大小写和空格）
+    private static final Pattern PAGE_OF_PATTERN = Pattern.compile(
+            "(?i)\\bpage\\b\\s*(\\d+)\\s*\\bof\\b\\s*(\\d+)");
+
+    /**
+     * 处理 HTML 内容
+     *
+     * @param html 原始 HTML
+     * @return 处理结果，包含处理后的 HTML 和单体 |数字| 列表
+     */
+    public HtmlProcessingResult process(String html) {
+        return processInternal(html, false);
+    }
+
+    /**
+     * 处理 Footer HTML 内容（特殊处理 page 数字 of 数字）
+     *
+     * @param html 原始 HTML
+     * @return 处理结果
+     */
+    public HtmlProcessingResult processFooter(String html) {
+        return processInternal(html, true);
+    }
+
+    /**
+     * 处理 HTML 内容。
+     *
+     * @param html 原始 HTML
+     * @param footerMode 是否启用 footer 的 page/of 处理
+     * @return 处理结果
+     */
+    private HtmlProcessingResult processInternal(String html, boolean footerMode) {
+        List<String> orphanPipeNumbers = new ArrayList<>();
+        Document doc = Jsoup.parse(html == null ? "" : html, "", Parser.xmlParser());
+
+        if (footerMode) {
+            processPageOfPattern(doc);
+        }
+        processInputTags(doc, orphanPipeNumbers);
+
+        Element body = doc.selectFirst("body");
+        String processedHtml = body != null ? body.html() : doc.html();
+        return new HtmlProcessingResult(processedHtml, orphanPipeNumbers);
+    }
+
+    /**
+     * 处理 page 数字 of 数字 格式。
+     *
+     * @param doc HTML 文档
+     */
+    private void processPageOfPattern(Document doc) {
+        List<TextNode> textNodes = new ArrayList<>();
+        collectTextNodes(doc, textNodes);
+
+        for (TextNode textNode : textNodes) {
+            String text = textNode.getWholeText();
+            String processedText = processPageOfText(text);
+            if (!processedText.equals(text)) {
+                textNode.text(processedText);
+            }
+        }
+    }
+
+    /**
+     * 处理文本中的 page 数字 of 数字
+     *
+     * @param text 原始文本
+     * @return 处理后的文本
+     */
+    private String processPageOfText(String text) {
+        Matcher matcher = PAGE_OF_PATTERN.matcher(text);
+        StringBuffer sb = new StringBuffer();
+
+        while (matcher.find()) {
+            // 替换为 page {{_pageNo}} of {{_totalPageNo}}
+            String replacement = "page {{_pageNo}} of {{_totalPageNo}}";
+            matcher.appendReplacement(sb, Matcher.quoteReplacement(replacement));
+        }
+        matcher.appendTail(sb);
+
+        return sb.toString();
+    }
+
+    /**
+     * 递归收集所有文本节点
+     *
+     * @param node 当前节点
+     * @param textNodes 文本节点列表
+     */
+    private void collectTextNodes(Node node, List<TextNode> textNodes) {
+        if (node instanceof TextNode) {
+            textNodes.add((TextNode) node);
+        }
+        for (Node child : node.childNodes()) {
+            collectTextNodes(child, textNodes);
+        }
+    }
+
+    /**
+     * 处理 input 标签
+     * 1. 仅当 value 完全匹配 [字符内容] 时，替换为 span（{{字符内容}}）
+     * 2. 仅当 value 完全匹配 |数字| 时，参与成对处理
+     * 3. |数字| 不成对时，移除孤立 input
+     *
+     * @param doc HTML 文档
+     * @param orphanPipeNumbers 孤立数字收集器
+     */
+    private void processInputTags(Document doc, List<String> orphanPipeNumbers) {
+        Elements inputs = doc.select("input");
+        Map<String, List<Element>> numberToInputs = new LinkedHashMap<>();
+
+        for (Element input : inputs) {
+            String value = input.attr("value");
+
+            Matcher bracketMatcher = BRACKET_VALUE_PATTERN.matcher(value);
+            if (bracketMatcher.matches()) {
+                // 替换为 span 标签
+                Element span = new Element("span");
+                String content = bracketMatcher.group(1).trim();
+                span.text("{{" + content + "}}");
+                input.replaceWith(span);
+                continue;
+            }
+
+            Matcher pipeMatcher = PIPE_VALUE_PATTERN.matcher(value);
+            if (pipeMatcher.matches()) {
+                String number = pipeMatcher.group(1).trim();
+                numberToInputs.computeIfAbsent(number, k -> new ArrayList<>()).add(input);
+            }
+        }
+
+        processPipeNumberPairs(numberToInputs, orphanPipeNumbers);
+    }
+
+    /**
+     * 处理 |数字| 成对标签
+     * 成对存在的替换为 {% if 数字-function() %} 和 {% endif %}
+     * 单体存在的直接删除 input，并记录到 orphanPipeNumbers
+     *
+     * @param numberToInputs 数字到 input 列表的映射
+     * @param orphanPipeNumbers 孤立数字收集器
+     */
+    private void processPipeNumberPairs(Map<String, List<Element>> numberToInputs, List<String> orphanPipeNumbers) {
+        for (Map.Entry<String, List<Element>> entry : numberToInputs.entrySet()) {
+            String number = entry.getKey();
+            List<Element> inputs = entry.getValue();
+
+            int i = 0;
+            for (; i + 1 < inputs.size(); i += 2) {
+                Element startInput = inputs.get(i);
+                Element endInput = inputs.get(i + 1);
+
+                Element startP = new Element("p");
+                startP.text("{% if " + number + "-function() %}");
+                startInput.replaceWith(startP);
+
+                Element endP = new Element("p");
+                endP.text("{% endif %}");
+                endInput.replaceWith(endP);
+            }
+
+            if ((inputs.size() & 1) == 1) {
+                // 奇数个，最后一个单体存在：删除孤立 input 并记录
+                Element orphan = inputs.get(inputs.size() - 1);
+                orphan.remove();
+                orphanPipeNumbers.add(number);
+            }
+        }
+    }
+}

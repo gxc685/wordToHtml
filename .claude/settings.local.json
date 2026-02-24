@@ -17,7 +17,8 @@
       "Bash(echo need to check:*)",
       "Bash(python3:*)",
       "Bash(python:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(git add:*)"
     ]
   }
 }

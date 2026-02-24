@@ -50,13 +50,14 @@ import java.util.stream.Stream;
  * <ul>
  *   <li>header.html / content.html / footer.html</li>
  *   <li>word.css（已按容器类做样式作用域隔离）</li>
- *   <li>images/ 资源目录</li>
+ *   <li>images/ 资源目录（imagesBase64=false 时）</li>
  *   <li>manifest.json 元数据</li>
  * </ul>
  */
 public class WordToHtmlConverter {
     private static final String RESULT_DIR = "result";
     private static final String IMG_DIR = "images";
+    private static final String ASPOSE_IMAGE_PREFIX = "Aspose.Words.";
     private static final String HEADER_FILE = "header.html";
     private static final String CONTENT_FILE = "content.html";
     private static final String FOOTER_FILE = "footer.html";
@@ -89,21 +90,21 @@ public class WordToHtmlConverter {
             Summary summary = run(cfg);
             System.out.println();
             System.out.println("==== Summary ====");
-            System.out.println("总目录数: " + summary.total);
-            System.out.println("成功: " + summary.ok);
-            System.out.println("失败: " + summary.fail);
-            System.out.println("跳过(无文档): " + summary.skipNoDoc);
-            System.out.println("跳过(overwrite=false): " + summary.skipOverwrite);
-            System.out.println("warnings: " + summary.warn);
+            System.out.println("Total directories: " + summary.total);
+            System.out.println("Success: " + summary.ok);
+            System.out.println("Failed: " + summary.fail);
+            System.out.println("Skipped (no document): " + summary.skipNoDoc);
+            System.out.println("Skipped (overwrite=false): " + summary.skipOverwrite);
+            System.out.println("Warnings: " + summary.warn);
             if (summary.fail > 0) {
                 System.exit(1);
             }
         } catch (IllegalArgumentException e) {
-            System.err.println("参数错误: " + e.getMessage());
+            System.err.println("Invalid arguments: " + e.getMessage());
             usage();
             System.exit(1);
         } catch (Exception e) {
-            System.err.println("执行失败: " + e.getMessage());
+            System.err.println("Execution failed: " + e.getMessage());
             e.printStackTrace();
             System.exit(1);
         }
@@ -118,13 +119,13 @@ public class WordToHtmlConverter {
     private static Summary run(Config cfg) throws Exception {
         log(cfg, "Root: " + cfg.root);
         List<Path> dirs = scanDirs(cfg);
-        log(cfg, "发现子目录数量: " + dirs.size());
+        log(cfg, "Discovered directories: " + dirs.size());
 
         Summary s = new Summary();
         for (Path dir : dirs) {
             s.total++;
             String rel = rel(cfg.root, dir);
-            log(cfg, "处理目录: " + rel);
+            log(cfg, "Processing directory: " + rel);
             Result r = processDir(cfg, dir);
             s.warn += r.warnings.size();
             for (String w : r.warnings) {
@@ -186,7 +187,7 @@ public class WordToHtmlConverter {
      *   <li>发现并选择 Word 文件</li>
      *   <li>创建/清空 result 目录</li>
      *   <li>执行拆分导出</li>
-     *   <li>写出 HTML/CSS/images/manifest</li>
+ *   <li>写出 HTML/CSS/(可选 images)/manifest</li>
      * </ol>
      *
      * @param cfg 运行配置
@@ -204,33 +205,36 @@ public class WordToHtmlConverter {
                         .collect(Collectors.toList());
             }
             if (docs.isEmpty()) {
-                warns.add("未找到匹配的 Word 文件。");
+                warns.add("No matching Word file found.");
                 return Result.of(Status.SKIP_NO_DOC, warns);
             }
             chosen = chooseDoc(docs, cfg.prefer);
             if (docs.size() > 1) {
-                warns.add("发现多个 Word 文件，已按规则选中: " + chosen.getFileName());
+                warns.add("Multiple Word files found, selected by rules: " + chosen.getFileName());
             }
 
             Path out = dir.resolve(RESULT_DIR);
             if (Files.exists(out) && !cfg.overwrite) {
-                warns.add("result 已存在且 overwrite=false，跳过。");
+                warns.add("result already exists and overwrite=false, skipped.");
                 return Result.of(Status.SKIP_OVERWRITE, warns);
             }
             recreate(out);
-            Path images = out.resolve(IMG_DIR);
-            Files.createDirectories(images);
+            Path images = cfg.imagesBase64 ? null : out.resolve(IMG_DIR);
+            if (images != null) {
+                Files.createDirectories(images);
+            }
 
-            Exported exported = convertOne(chosen, images, cfg, warns);
+            ManifestData manifestData = new ManifestData();
+            Exported exported = convertOne(chosen, images, cfg, warns, manifestData);
             write(out.resolve(HEADER_FILE), exported.header);
             write(out.resolve(CONTENT_FILE), exported.content);
             write(out.resolve(FOOTER_FILE), exported.footer);
             write(out.resolve(CSS_FILE), exported.css);
-            write(out.resolve(MANIFEST_FILE), manifest(chosen, warns, cfg));
+            write(out.resolve(MANIFEST_FILE), manifest(chosen, warns, cfg, manifestData));
             return Result.of(Status.OK, warns);
         } catch (Exception e) {
             String source = chosen == null ? "" : " (source=" + chosen.getFileName() + ")";
-            return Result.fail("处理异常" + source + ": " + e.getMessage(), e, warns);
+            return Result.fail("Processing exception" + source + ": " + e.getMessage(), e, warns);
         }
     }
 
@@ -241,28 +245,30 @@ public class WordToHtmlConverter {
      * <ul>
      *   <li>header/footer 来自 first section（First 非空优先，否则 Primary）</li>
      *   <li>content 拼接所有 section 的 body 块级节点（段落/表格）</li>
+     *   <li>通过 HtmlBodyProcessor 处理 input 标签和特殊格式</li>
      * </ul>
      *
      * @param sourcePath Word 文件路径
-     * @param imagesDir 图片输出目录
+     * @param imagesDir 图片输出目录（imagesBase64=true 时可为 null）
      * @param cfg 运行配置
      * @param warns 告警收集器
+     * @param manifestData manifest 数据收集器
      * @return 三段 HTML + 汇总 CSS
      */
-    private static Exported convertOne(Path sourcePath, Path imagesDir, Config cfg, List<String> warns) throws Exception {
+    private static Exported convertOne(Path sourcePath, Path imagesDir, Config cfg, List<String> warns, ManifestData manifestData) throws Exception {
         Document src = new Document(sourcePath.toString());
         if (cfg.updateFields) {
             try {
                 src.updateFields();
             } catch (Exception e) {
-                warns.add("updateFields 失败: " + compact(e.getMessage()));
+                warns.add("updateFields failed: " + compact(e.getMessage()));
             }
         }
         if (cfg.acceptRevisions) {
             try {
                 src.acceptAllRevisions();
             } catch (Exception e) {
-                warns.add("acceptAllRevisions 失败: " + compact(e.getMessage()));
+                warns.add("acceptAllRevisions failed: " + compact(e.getMessage()));
             }
         }
 
@@ -272,31 +278,44 @@ public class WordToHtmlConverter {
 
         Section first = src.getFirstSection();
         if (first == null) {
-            throw new IllegalStateException("文档不存在 Section。");
+            throw new IllegalStateException("No section found in document.");
         }
         HeaderFooter h = pick(first, true);
         HeaderFooter f = pick(first, false);
         if (h == null) {
-            warns.add("未找到可用 header，输出为空容器。");
+            warns.add("No usable header found; output will be an empty container.");
         } else {
             appendHeaderFooter(src, h, hDoc);
         }
         if (f == null) {
-            warns.add("未找到可用 footer，输出为空容器。");
+            warns.add("No usable footer found; output will be an empty container.");
         } else {
             appendHeaderFooter(src, f, fDoc);
         }
         appendContent(src, cDoc);
 
-        HtmlFrag hFrag = saveFrag(hDoc, imagesDir, "wh-");
-        HtmlFrag cFrag = saveFrag(cDoc, imagesDir, "wc-");
-        HtmlFrag fFrag = saveFrag(fDoc, imagesDir, "wf-");
+        HtmlFrag hFrag = saveFrag(hDoc, imagesDir, "wh-", cfg.imagesBase64);
+        HtmlFrag cFrag = saveFrag(cDoc, imagesDir, "wc-", cfg.imagesBase64);
+        HtmlFrag fFrag = saveFrag(fDoc, imagesDir, "wf-", cfg.imagesBase64);
+
+        // 使用 HtmlBodyProcessor 处理 body 内容
+        HtmlBodyProcessor processor = new HtmlBodyProcessor();
+
+        HtmlProcessingResult hResult = processor.process(hFrag.body);
+        HtmlProcessingResult cResult = processor.process(cFrag.body);
+        // footer 使用特殊处理方法，处理 page 数字 of 数字
+        HtmlProcessingResult fResult = processor.processFooter(fFrag.body);
+
+        // 收集单体 |数字| 到 manifestData
+        manifestData.addOrphanPipeNumbers(hResult.getOrphanPipeNumbers());
+        manifestData.addOrphanPipeNumbers(cResult.getOrphanPipeNumbers());
+        manifestData.addOrphanPipeNumbers(fResult.getOrphanPipeNumbers());
 
         String css = mergeCss(hFrag.css, cFrag.css, fFrag.css);
         return new Exported(
-                wrap("word-header", hFrag.body),
-                wrap("word-content", cFrag.body),
-                wrap("word-footer", fFrag.body),
+                wrap("word-header", hResult.getHtml()),
+                wrap("word-content", cResult.getHtml()),
+                wrap("word-footer", fResult.getHtml()),
                 css
         );
     }
@@ -422,23 +441,36 @@ public class WordToHtmlConverter {
      * 导出片段 HTML，并提取 body 片段与 style 块。
      *
      * @param doc 片段文档
-     * @param imagesDir 图片目录
+     * @param imagesDir 图片目录（imagesBase64=false 时使用）
      * @param cssPrefix 该片段的 Aspose CSS 类名前缀
+     * @param imagesBase64 图片是否以内嵌 base64 输出
      * @return 提取后的 HTML/CSS
      */
-    private static HtmlFrag saveFrag(Document doc, Path imagesDir, String cssPrefix) throws Exception {
+    private static HtmlFrag saveFrag(Document doc, Path imagesDir, String cssPrefix, boolean imagesBase64) throws Exception {
         HtmlSaveOptions opt = new HtmlSaveOptions(SaveFormat.HTML);
         opt.setEncoding(StandardCharsets.UTF_8);
         opt.setCssStyleSheetType(CssStyleSheetType.EMBEDDED);
         opt.setCssClassNamePrefix(cssPrefix);
-        opt.setExportImagesAsBase64(false);
+        opt.setExportImagesAsBase64(imagesBase64);
         opt.setExportFontResources(false);
         opt.setExportHeadersFootersMode(ExportHeadersFootersMode.NONE);
         opt.setExportPageMargins(false);
         opt.setExportPageSetup(false);
         opt.setExportRoundtripInformation(false);
-        opt.setImagesFolder(imagesDir.toAbsolutePath().toString());
-        opt.setImagesFolderAlias(IMG_DIR);
+        if (!imagesBase64 && imagesDir != null) {
+            opt.setImagesFolder(imagesDir.toAbsolutePath().toString());
+            opt.setImagesFolderAlias(IMG_DIR);
+            opt.setImageSavingCallback(args -> {
+                String current = args.getImageFileName();
+                if (current == null || current.isEmpty()) {
+                    return;
+                }
+                String renamed = stripAsposeImagePrefix(current);
+                if (!current.equals(renamed)) {
+                    args.setImageFileName(renamed);
+                }
+            });
+        }
         opt.setPrettyFormat(true);
 
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -447,6 +479,24 @@ public class WordToHtmlConverter {
         String body = extractBody(html);
         List<String> cssBlocks = extractCss(html);
         return new HtmlFrag(body, cssBlocks);
+    }
+
+    private static String stripAsposeImagePrefix(String imageFileName) {
+        if (imageFileName == null || imageFileName.isEmpty()) {
+            return imageFileName;
+        }
+        int slash = Math.max(imageFileName.lastIndexOf('/'), imageFileName.lastIndexOf('\\'));
+        if (slash < 0) {
+            return imageFileName.startsWith(ASPOSE_IMAGE_PREFIX)
+                    ? imageFileName.substring(ASPOSE_IMAGE_PREFIX.length())
+                    : imageFileName;
+        }
+        String dir = imageFileName.substring(0, slash + 1);
+        String name = imageFileName.substring(slash + 1);
+        if (name.startsWith(ASPOSE_IMAGE_PREFIX)) {
+            name = name.substring(ASPOSE_IMAGE_PREFIX.length());
+        }
+        return dir + name;
     }
 
     /**
@@ -633,13 +683,15 @@ public class WordToHtmlConverter {
      * @param srcDoc 源文档
      * @param warnings 告警列表
      * @param cfg 运行配置
+     * @param manifestData manifest 数据收集器
      * @return JSON 文本
      */
-    private static String manifest(Path srcDoc, List<String> warnings, Config cfg) {
+    private static String manifest(Path srcDoc, List<String> warnings, Config cfg, ManifestData manifestData) {
         List<String> notes = Arrays.asList(
                 "updateFields=" + cfg.updateFields,
                 "acceptRevisions=" + cfg.acceptRevisions,
-                "prefer=" + cfg.prefer
+                "prefer=" + cfg.prefer,
+                "imagesBase64=" + cfg.imagesBase64
         );
         StringBuilder sb = new StringBuilder();
         sb.append("{\n");
@@ -650,10 +702,16 @@ public class WordToHtmlConverter {
         sb.append("    \"content\": ").append(q(CONTENT_FILE)).append(",\n");
         sb.append("    \"footer\": ").append(q(FOOTER_FILE)).append(",\n");
         sb.append("    \"css\": ").append(q(CSS_FILE)).append(",\n");
-        sb.append("    \"imagesDir\": ").append(q(IMG_DIR + "/")).append("\n");
+        sb.append("    \"imagesBase64\": ").append(cfg.imagesBase64).append(",\n");
+        if (cfg.imagesBase64) {
+            sb.append("    \"imagesDir\": null\n");
+        } else {
+            sb.append("    \"imagesDir\": ").append(q(IMG_DIR + "/")).append("\n");
+        }
         sb.append("  },\n");
         sb.append("  \"warnings\": ").append(toArr(warnings)).append(",\n");
-        sb.append("  \"notes\": ").append(toArr(notes)).append("\n");
+        sb.append("  \"notes\": ").append(toArr(notes)).append(",\n");
+        sb.append("  \"orphanPipeNumbers\": ").append(toArr(manifestData.getOrphanPipeNumbers())).append("\n");
         sb.append("}\n");
         return sb.toString();
     }
@@ -857,14 +915,15 @@ public class WordToHtmlConverter {
      * 打印命令行帮助。
      */
     private static void usage() {
-        System.out.println("用法:");
+        System.out.println("Usage:");
         System.out.println("  java -jar word-to-html.jar [--root=. ] [--recursive=false] [--docPattern=*.doc,*.docx]");
         System.out.println("                        [--prefer=docx] [--overwrite=true] [--acceptRevisions=false]");
-        System.out.println("                        [--updateFields=true] [--log=info|debug] [--failFast=false]");
+        System.out.println("                        [--updateFields=true] [--imagesBase64=true] [--log=info|debug] [--failFast=false]");
         System.out.println();
-        System.out.println("示例:");
+        System.out.println("Examples:");
         System.out.println("  java -jar word-to-html.jar --root=. --recursive=false --prefer=docx");
         System.out.println("  java -jar word-to-html.jar --root=./convert --recursive=true --overwrite=true");
+        System.out.println("  java -jar word-to-html.jar --root=./convert --imagesBase64=false");
     }
 
     /**
@@ -954,6 +1013,7 @@ public class WordToHtmlConverter {
         final boolean overwrite;
         final boolean acceptRevisions;
         final boolean updateFields;
+        final boolean imagesBase64;
         final String prefer;
         final List<PathMatcher> docMatchers;
         final boolean debug;
@@ -961,13 +1021,14 @@ public class WordToHtmlConverter {
         final boolean help;
 
         Config(Path root, boolean recursive, boolean overwrite, boolean acceptRevisions,
-               boolean updateFields, String prefer, List<PathMatcher> docMatchers,
+               boolean updateFields, boolean imagesBase64, String prefer, List<PathMatcher> docMatchers,
                boolean debug, boolean failFast, boolean help) {
             this.root = root;
             this.recursive = recursive;
             this.overwrite = overwrite;
             this.acceptRevisions = acceptRevisions;
             this.updateFields = updateFields;
+            this.imagesBase64 = imagesBase64;
             this.prefer = prefer;
             this.docMatchers = docMatchers;
             this.debug = debug;
@@ -987,6 +1048,7 @@ public class WordToHtmlConverter {
             boolean overwrite = true;
             boolean acceptRevisions = false;
             boolean updateFields = true;
+            boolean imagesBase64 = true;
             String prefer = "docx";
             String docPatternRaw = "*.doc,*.docx";
             boolean debug = false;
@@ -1013,7 +1075,7 @@ public class WordToHtmlConverter {
                             val = "true";
                         } else {
                             if (i + 1 >= args.length) {
-                                throw new IllegalArgumentException("缺少参数值: --" + key);
+                                throw new IllegalArgumentException("Missing value for argument: --" + key);
                             }
                             val = args[++i];
                         }
@@ -1024,15 +1086,16 @@ public class WordToHtmlConverter {
                         case "overwrite": overwrite = parseBool(val, key); break;
                         case "acceptRevisions": acceptRevisions = parseBool(val, key); break;
                         case "updateFields": updateFields = parseBool(val, key); break;
+                        case "imagesBase64": imagesBase64 = parseBool(val, key); break;
                         case "prefer": prefer = parsePrefer(val); break;
                         case "docPattern": docPatternRaw = val; break;
                         case "log": debug = parseLog(val); break;
                         case "failFast": failFast = parseBool(val, key); break;
-                        default: throw new IllegalArgumentException("不支持的参数: --" + key);
+                        default: throw new IllegalArgumentException("Unsupported argument: --" + key);
                     }
                 } else {
                     if (positionalRoot != null) {
-                        throw new IllegalArgumentException("多余的位置参数: " + arg);
+                        throw new IllegalArgumentException("Unexpected positional argument: " + arg);
                     }
                     positionalRoot = arg;
                 }
@@ -1042,10 +1105,10 @@ public class WordToHtmlConverter {
                 root = parseRoot(positionalRoot);
             }
             if (!Files.exists(root)) {
-                throw new IllegalArgumentException("root 路径不存在: " + root);
+                throw new IllegalArgumentException("root path does not exist: " + root);
             }
             if (!Files.isDirectory(root)) {
-                throw new IllegalArgumentException("root 不是目录: " + root);
+                throw new IllegalArgumentException("root is not a directory: " + root);
             }
 
             List<String> patterns = Arrays.stream(docPatternRaw.split(","))
@@ -1053,19 +1116,19 @@ public class WordToHtmlConverter {
                     .filter(v -> !v.isEmpty())
                     .collect(Collectors.toList());
             if (patterns.isEmpty()) {
-                throw new IllegalArgumentException("docPattern 不能为空");
+                throw new IllegalArgumentException("docPattern cannot be empty");
             }
             final Path matcherRoot = root;
             List<PathMatcher> matchers = patterns.stream().map(p -> {
                 try {
                     return matcherRoot.getFileSystem().getPathMatcher("glob:" + p);
                 } catch (Exception e) {
-                    throw new IllegalArgumentException("docPattern 非法: " + p);
+                    throw new IllegalArgumentException("Invalid docPattern: " + p);
                 }
             }).collect(Collectors.toList());
 
             return new Config(root, recursive, overwrite, acceptRevisions,
-                    updateFields, prefer, matchers, debug, failFast, help);
+                    updateFields, imagesBase64, prefer, matchers, debug, failFast, help);
         }
 
         /**
@@ -1075,7 +1138,7 @@ public class WordToHtmlConverter {
             try {
                 return Paths.get(v).toAbsolutePath().normalize();
             } catch (InvalidPathException e) {
-                throw new IllegalArgumentException("root 路径非法: " + v);
+                throw new IllegalArgumentException("Invalid root path: " + v);
             }
         }
 
@@ -1085,7 +1148,7 @@ public class WordToHtmlConverter {
         private static String parsePrefer(String v) {
             String p = v.trim().toLowerCase(Locale.ROOT);
             if (!"doc".equals(p) && !"docx".equals(p)) {
-                throw new IllegalArgumentException("--prefer 仅支持 doc 或 docx，当前: " + v);
+                throw new IllegalArgumentException("--prefer only supports doc or docx, got: " + v);
             }
             return p;
         }
@@ -1101,7 +1164,7 @@ public class WordToHtmlConverter {
             if ("info".equals(t)) {
                 return false;
             }
-            throw new IllegalArgumentException("--log 仅支持 info|debug，当前: " + v);
+            throw new IllegalArgumentException("--log only supports info|debug, got: " + v);
         }
 
         /**
@@ -1114,7 +1177,7 @@ public class WordToHtmlConverter {
             if ("false".equalsIgnoreCase(v)) {
                 return false;
             }
-            throw new IllegalArgumentException("--" + key + " 仅支持 true/false，当前: " + v);
+            throw new IllegalArgumentException("--" + key + " only supports true/false, got: " + v);
         }
 
         /**
@@ -1125,6 +1188,7 @@ public class WordToHtmlConverter {
                     || "overwrite".equals(k)
                     || "acceptRevisions".equals(k)
                     || "updateFields".equals(k)
+                    || "imagesBase64".equals(k)
                     || "failFast".equals(k);
         }
     }

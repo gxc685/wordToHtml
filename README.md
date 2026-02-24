@@ -26,7 +26,9 @@
   - `<div class="word-header">...</div>`
   - `<div class="word-content">...</div>`
   - `<div class="word-footer">...</div>`
-- 图片落盘到 `result/images/`（非 base64）
+- 图片输出支持两种模式（`--imagesBase64`）：
+  - `true`（默认）：图片内嵌为 base64
+  - `false`：图片落盘到 `result/images/`
 - CSS 汇总输出到 `result/word.css`
 
 ## 输出目录结构
@@ -52,6 +54,7 @@
 - `--prefer=docx` 候选优先级（`docx|doc`）
 - `--acceptRevisions=false` 是否接受修订
 - `--updateFields=true` 是否更新字段
+- `--imagesBase64=true` 是否将图片内嵌为 base64（`false` 则输出到 `images/`）
 - `--overwrite=true` result 已存在时是否覆盖
 - `--log=info|debug` 日志级别
 - `--failFast=false` 出错是否立即停止
@@ -68,6 +71,9 @@ mvn clean package
 
 ```bash
 mvn -q exec:java -Dexec.args="--root=./convert --recursive=false --prefer=docx"
+
+# 图片输出到 images/ 目录（不使用 base64）
+mvn -q exec:java -Dexec.args="--root=./convert --recursive=false --imagesBase64=false"
 ```
 
 ### 3. 运行（脚本）

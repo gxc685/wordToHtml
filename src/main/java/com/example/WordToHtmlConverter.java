@@ -68,6 +68,7 @@ public class WordToHtmlConverter {
     private static final Pattern BODY_TAG = Pattern.compile("(?is)<body[^>]*>(.*?)</body>");
     private static final Pattern LINK_TAG = Pattern.compile("(?is)<link[^>]*>");
     private static final Pattern CSS_RULE_HEAD = Pattern.compile("(?m)^(\\s*)([^\\n\\{\\}]+?)\\s*\\{");
+    private static final Pattern BRACKET_FORM_FIELD_RESULT = Pattern.compile("^\\s*\\[[^\\]]+\\]\\s*$");
 
     /**
      * CLI 入口。
@@ -293,6 +294,10 @@ public class WordToHtmlConverter {
             appendHeaderFooter(src, f, fDoc);
         }
         appendContent(src, cDoc);
+        // 对 [xxx] 这类 FORMTEXT 先解除字段，保留原 run 样式（如加粗），再交给 HTML 处理器做 {{xxx}} 替换。
+        unlinkBracketTextInputFields(hDoc, warns);
+        unlinkBracketTextInputFields(cDoc, warns);
+        unlinkBracketTextInputFields(fDoc, warns);
 
         HtmlFrag hFrag = saveFrag(hDoc, imagesDir, "wh-", cfg.imagesBase64);
         HtmlFrag cFrag = saveFrag(cDoc, imagesDir, "wc-", cfg.imagesBase64);
@@ -434,6 +439,36 @@ public class WordToHtmlConverter {
         }
         if (!body.hasChildNodes()) {
             body.ensureMinimum();
+        }
+    }
+
+    /**
+     * 将结果值为 [xxx] 的文本表单字段解除为普通文本 run。
+     * <p>
+     * 目的：避免 Aspose 将此类字段导出为无样式 input，导致后续替换为 {{xxx}} 时丢失加粗等格式。
+     *
+     * @param doc 待处理文档片段
+     * @param warns 告警收集器
+     */
+    private static void unlinkBracketTextInputFields(Document doc, List<String> warns) {
+        if (doc == null) {
+            return;
+        }
+        FieldCollection fields = doc.getRange().getFields();
+        for (int i = fields.getCount() - 1; i >= 0; i--) {
+            com.aspose.words.Field field = fields.get(i);
+            if (field.getType() != FieldType.FIELD_FORM_TEXT_INPUT) {
+                continue;
+            }
+            String result = field.getResult();
+            if (result == null || !BRACKET_FORM_FIELD_RESULT.matcher(result).matches()) {
+                continue;
+            }
+            try {
+                field.unlink();
+            } catch (Exception e) {
+                warns.add("unlink bracket form field failed: " + compact(e.getMessage()));
+            }
         }
     }
 

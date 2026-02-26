@@ -1,6 +1,7 @@
 package com.example;
 
 import org.jsoup.Jsoup;
+import org.jsoup.nodes.Attribute;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.nodes.Node;
@@ -21,8 +22,10 @@ import java.util.regex.Pattern;
  */
 public class HtmlBodyProcessor {
 
-    // 仅匹配 input value 完全是 [字符内容]
+    // 匹配完整的 [字符内容]（用于 input value）
     private static final Pattern BRACKET_VALUE_PATTERN = Pattern.compile("^\\s*\\[([^\\]]+)\\]\\s*$");
+    // 匹配文本中的 [字符内容]
+    private static final Pattern BRACKET_TEXT_PATTERN = Pattern.compile("\\[([^\\]]+)\\]");
     // 仅匹配 input value 完全是 |数字|
     private static final Pattern PIPE_VALUE_PATTERN = Pattern.compile("^\\s*\\|\\s*(\\d+)\\s*\\|\\s*$");
     // 匹配 page 数字 of 数字（支持各种大小写和空格）
@@ -64,6 +67,7 @@ public class HtmlBodyProcessor {
             processPageOfPattern(doc);
         }
         processInputTags(doc, orphanPipeNumbers);
+        processBracketTextInNodes(doc);
 
         Element body = doc.selectFirst("body");
         String processedHtml = body != null ? body.html() : doc.html();
@@ -109,6 +113,44 @@ public class HtmlBodyProcessor {
     }
 
     /**
+     * 处理文本节点中的 [字符内容]，替换为 {{字符内容}}
+     *
+     * @param doc HTML 文档
+     */
+    private void processBracketTextInNodes(Document doc) {
+        List<TextNode> textNodes = new ArrayList<>();
+        collectTextNodes(doc, textNodes);
+
+        for (TextNode textNode : textNodes) {
+            String text = textNode.getWholeText();
+            String processedText = processBracketText(text);
+            if (!processedText.equals(text)) {
+                textNode.text(processedText);
+            }
+        }
+    }
+
+    /**
+     * 处理文本中的 [字符内容] 替换为 {{字符内容}}
+     *
+     * @param text 原始文本
+     * @return 处理后的文本
+     */
+    private String processBracketText(String text) {
+        Matcher matcher = BRACKET_TEXT_PATTERN.matcher(text);
+        StringBuffer sb = new StringBuffer();
+
+        while (matcher.find()) {
+            String content = matcher.group(1).trim();
+            String replacement = "{{" + content + "}}";
+            matcher.appendReplacement(sb, Matcher.quoteReplacement(replacement));
+        }
+        matcher.appendTail(sb);
+
+        return sb.toString();
+    }
+
+    /**
      * 递归收集所有文本节点
      *
      * @param node 当前节点
@@ -128,6 +170,7 @@ public class HtmlBodyProcessor {
      * 1. 仅当 value 完全匹配 [字符内容] 时，替换为 span（{{字符内容}}）
      * 2. 仅当 value 完全匹配 |数字| 时，参与成对处理
      * 3. |数字| 不成对时，移除孤立 input
+     * 注意：普通文本节点中的 [字符内容] 由 processBracketTextInNodes 处理
      *
      * @param doc HTML 文档
      * @param orphanPipeNumbers 孤立数字收集器
@@ -137,12 +180,14 @@ public class HtmlBodyProcessor {
         Map<String, List<Element>> numberToInputs = new LinkedHashMap<>();
 
         for (Element input : inputs) {
+            removeLeadingTextAnchor(input);
             String value = input.attr("value");
 
             Matcher bracketMatcher = BRACKET_VALUE_PATTERN.matcher(value);
             if (bracketMatcher.matches()) {
                 // 替换为 span 标签
                 Element span = new Element("span");
+                copyInputPresentationAttributes(input, span);
                 String content = bracketMatcher.group(1).trim();
                 span.text("{{" + content + "}}");
                 input.replaceWith(span);
@@ -160,8 +205,67 @@ public class HtmlBodyProcessor {
     }
 
     /**
+     * 删除 input 前面由 TextField 导出的占位锚点：<a name="text"></a>
+     *
+     * @param input input 节点
+     */
+    private void removeLeadingTextAnchor(Element input) {
+        if (input == null) {
+            return;
+        }
+        while (true) {
+            Element prev = input.previousElementSibling();
+            if (prev == null) {
+                return;
+            }
+            if (!"a".equalsIgnoreCase(prev.tagName())) {
+                return;
+            }
+            if (!"text".equalsIgnoreCase(prev.attr("name").trim())) {
+                return;
+            }
+            prev.remove();
+        }
+    }
+
+    /**
+     * input -> span 时保留展示相关属性，避免原样式丢失。
+     *
+     * @param input 源 input
+     * @param span 目标 span
+     */
+    private void copyInputPresentationAttributes(Element input, Element span) {
+        for (Attribute attribute : input.attributes()) {
+            String key = attribute.getKey();
+            if (isUnsupportedSpanAttr(key)) {
+                continue;
+            }
+            span.attr(key, attribute.getValue());
+        }
+    }
+
+    /**
+     * 过滤掉 input 专属属性，避免复制后产生无效/误导属性。
+     *
+     * @param key 属性名
+     * @return true 表示不复制
+     */
+    private boolean isUnsupportedSpanAttr(String key) {
+        return "type".equalsIgnoreCase(key)
+                || "value".equalsIgnoreCase(key)
+                || "name".equalsIgnoreCase(key)
+                || "checked".equalsIgnoreCase(key)
+                || "readonly".equalsIgnoreCase(key)
+                || "disabled".equalsIgnoreCase(key)
+                || "maxlength".equalsIgnoreCase(key)
+                || "minlength".equalsIgnoreCase(key)
+                || "size".equalsIgnoreCase(key)
+                || "autocomplete".equalsIgnoreCase(key);
+    }
+
+    /**
      * 处理 |数字| 成对标签
-     * 成对存在的替换为 {% if 数字-function() %} 和 {% endif %}
+     * 成对存在的替换为 {% if(FO_数字,=,Y) %} 和 {% endif %}
      * 单体存在的直接删除 input，并记录到 orphanPipeNumbers
      *
      * @param numberToInputs 数字到 input 列表的映射
@@ -178,7 +282,7 @@ public class HtmlBodyProcessor {
                 Element endInput = inputs.get(i + 1);
 
                 Element startP = new Element("p");
-                startP.text("{% if " + number + "-function() %}");
+                startP.text("{% if(FO_" + number + ",=,Y) %}");
                 startInput.replaceWith(startP);
 
                 Element endP = new Element("p");

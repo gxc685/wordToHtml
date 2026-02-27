@@ -66,6 +66,7 @@ public class HtmlBodyProcessor {
         if (footerMode) {
             processPageOfPattern(doc);
         }
+        processTextAnchors(doc);
         processInputTags(doc, orphanPipeNumbers);
         processBracketTextInNodes(doc);
 
@@ -166,6 +167,83 @@ public class HtmlBodyProcessor {
     }
 
     /**
+     * 处理 TextField 导出的锚点，适配无 input 的场景：
+     * 1. <a name="text"> ... [text] ... </a> -> 去掉 a，保留内部节点
+     * 2. <a name="text"></a><span>[text]</span> -> 删除空 a
+     *
+     * @param doc HTML 文档
+     */
+    private void processTextAnchors(Document doc) {
+        List<Element> anchors = new ArrayList<>();
+        for (Element anchor : doc.select("a")) {
+            if (isTextAnchor(anchor)) {
+                anchors.add(anchor);
+            }
+        }
+
+        for (Element anchor : anchors) {
+            if (anchor.parent() == null) {
+                continue;
+            }
+            if (containsBracketText(anchor)) {
+                anchor.unwrap();
+                continue;
+            }
+            if (isWhitespaceOnly(anchor)) {
+                Element next = anchor.nextElementSibling();
+                if (next != null && containsBracketText(next)) {
+                    anchor.remove();
+                }
+            }
+        }
+    }
+
+    /**
+     * 是否为 TextField 占位锚点。
+     */
+    private boolean isTextAnchor(Element anchor) {
+        return anchor != null
+                && "a".equalsIgnoreCase(anchor.tagName())
+                && "text".equalsIgnoreCase(anchor.attr("name").trim());
+    }
+
+    /**
+     * 判断节点文本中是否包含 [xxx] 占位内容。
+     */
+    private boolean containsBracketText(Node node) {
+        if (node == null) {
+            return false;
+        }
+        List<TextNode> textNodes = new ArrayList<>();
+        collectTextNodes(node, textNodes);
+        for (TextNode textNode : textNodes) {
+            if (BRACKET_TEXT_PATTERN.matcher(textNode.getWholeText()).find()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 判断元素是否仅包含空白文本。
+     */
+    private boolean isWhitespaceOnly(Element element) {
+        if (element == null) {
+            return true;
+        }
+        for (Node child : element.childNodes()) {
+            if (child instanceof TextNode) {
+                if (!((TextNode) child).getWholeText().trim().isEmpty()) {
+                    return false;
+                }
+                continue;
+            }
+            return false;
+        }
+        return true;
+    }
+
+    /**
      * 处理 input 标签
      * 1. 仅当 value 完全匹配 [字符内容] 时，替换为 span（{{字符内容}}）
      * 2. 仅当 value 完全匹配 |数字| 时，参与成对处理
@@ -180,7 +258,6 @@ public class HtmlBodyProcessor {
         Map<String, List<Element>> numberToInputs = new LinkedHashMap<>();
 
         for (Element input : inputs) {
-            removeLeadingTextAnchor(input);
             String value = input.attr("value");
 
             Matcher bracketMatcher = BRACKET_VALUE_PATTERN.matcher(value);
@@ -202,30 +279,6 @@ public class HtmlBodyProcessor {
         }
 
         processPipeNumberPairs(numberToInputs, orphanPipeNumbers);
-    }
-
-    /**
-     * 删除 input 前面由 TextField 导出的占位锚点：<a name="text"></a>
-     *
-     * @param input input 节点
-     */
-    private void removeLeadingTextAnchor(Element input) {
-        if (input == null) {
-            return;
-        }
-        while (true) {
-            Element prev = input.previousElementSibling();
-            if (prev == null) {
-                return;
-            }
-            if (!"a".equalsIgnoreCase(prev.tagName())) {
-                return;
-            }
-            if (!"text".equalsIgnoreCase(prev.attr("name").trim())) {
-                return;
-            }
-            prev.remove();
-        }
     }
 
     /**

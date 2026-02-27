@@ -168,8 +168,8 @@ public class HtmlBodyProcessor {
 
     /**
      * 处理 TextField 导出的锚点，适配无 input 的场景：
-     * 1. <a name="text"> ... [text] ... </a> -> 去掉 a，保留内部节点
-     * 2. <a name="text"></a><span>[text]</span> -> 删除空 a
+     * 1. <a name="text"> ... </a> -> 去掉 a，保留内部节点
+     * 2. <a name="text"></a> -> 删除空 a
      *
      * @param doc HTML 文档
      */
@@ -185,16 +185,11 @@ public class HtmlBodyProcessor {
             if (anchor.parent() == null) {
                 continue;
             }
-            if (containsBracketText(anchor)) {
+            if (anchor.childNodeSize() > 0) {
                 anchor.unwrap();
                 continue;
             }
-            if (isWhitespaceOnly(anchor)) {
-                Element next = anchor.nextElementSibling();
-                if (next != null && containsBracketText(next)) {
-                    anchor.remove();
-                }
-            }
+            anchor.remove();
         }
     }
 
@@ -205,42 +200,6 @@ public class HtmlBodyProcessor {
         return anchor != null
                 && "a".equalsIgnoreCase(anchor.tagName())
                 && "text".equalsIgnoreCase(anchor.attr("name").trim());
-    }
-
-    /**
-     * 判断节点文本中是否包含 [xxx] 占位内容。
-     */
-    private boolean containsBracketText(Node node) {
-        if (node == null) {
-            return false;
-        }
-        List<TextNode> textNodes = new ArrayList<>();
-        collectTextNodes(node, textNodes);
-        for (TextNode textNode : textNodes) {
-            if (BRACKET_TEXT_PATTERN.matcher(textNode.getWholeText()).find()) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * 判断元素是否仅包含空白文本。
-     */
-    private boolean isWhitespaceOnly(Element element) {
-        if (element == null) {
-            return true;
-        }
-        for (Node child : element.childNodes()) {
-            if (child instanceof TextNode) {
-                if (!((TextNode) child).getWholeText().trim().isEmpty()) {
-                    return false;
-                }
-                continue;
-            }
-            return false;
-        }
-        return true;
     }
 
     /**

@@ -168,38 +168,77 @@ public class HtmlBodyProcessor {
 
     /**
      * 处理 TextField 导出的锚点，适配无 input 的场景：
-     * 1. <a name="text"> ... </a> -> 去掉 a，保留内部节点
-     * 2. <a name="text"></a> -> 删除空 a
+     * 1. <a name="变量"> ... [变量] ... </a> -> 去掉 a，保留内部节点
+     * 2. <a name="变量"></a><span>[变量]</span> -> 删除空 a
      *
      * @param doc HTML 文档
      */
     private void processTextAnchors(Document doc) {
         List<Element> anchors = new ArrayList<>();
-        for (Element anchor : doc.select("a")) {
-            if (isTextAnchor(anchor)) {
-                anchors.add(anchor);
-            }
+        for (Element anchor : doc.select("a[name]")) {
+            anchors.add(anchor);
         }
 
         for (Element anchor : anchors) {
             if (anchor.parent() == null) {
                 continue;
             }
-            if (anchor.childNodeSize() > 0) {
+
+            String anchorName = anchor.attr("name").trim();
+            if (anchorName.isEmpty()) {
+                continue;
+            }
+
+            String insideVar = extractBracketVariable(anchor);
+            if (insideVar != null && anchorName.equalsIgnoreCase(insideVar)) {
                 anchor.unwrap();
                 continue;
             }
-            anchor.remove();
+
+            if (anchor.childNodeSize() == 0) {
+                String nextVar = extractBracketVariable(anchor.nextElementSibling());
+                if (nextVar != null && anchorName.equalsIgnoreCase(nextVar)) {
+                    anchor.remove();
+                }
+            }
         }
     }
 
     /**
-     * 是否为 TextField 占位锚点。
+     * 提取节点中第一个 [变量] 的变量名。
+     * 兼容文本节点和 input value 两种来源。
      */
-    private boolean isTextAnchor(Element anchor) {
-        return anchor != null
-                && "a".equalsIgnoreCase(anchor.tagName())
-                && "text".equalsIgnoreCase(anchor.attr("name").trim());
+    private String extractBracketVariable(Node node) {
+        if (node == null) {
+            return null;
+        }
+
+        List<TextNode> textNodes = new ArrayList<>();
+        collectTextNodes(node, textNodes);
+        for (TextNode textNode : textNodes) {
+            Matcher matcher = BRACKET_TEXT_PATTERN.matcher(textNode.getWholeText());
+            if (matcher.find()) {
+                String variable = matcher.group(1).trim();
+                if (!variable.isEmpty()) {
+                    return variable;
+                }
+            }
+        }
+
+        if (node instanceof Element) {
+            Element element = (Element) node;
+            for (Element input : element.select("input")) {
+                Matcher matcher = BRACKET_VALUE_PATTERN.matcher(input.attr("value"));
+                if (matcher.matches()) {
+                    String variable = matcher.group(1).trim();
+                    if (!variable.isEmpty()) {
+                        return variable;
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 
     /**
